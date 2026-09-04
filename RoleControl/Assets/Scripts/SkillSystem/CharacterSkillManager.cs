@@ -3,160 +3,129 @@ using System.Collections.Generic;
 using System.Collections;
 
 /// <summary>
-/// 技能管理类
+/// 技能管理类 — 冷却、SP检查、VFX部署
 /// </summary>
-
 [RequireComponent(typeof(CharacterSkillSystem))]
 public class CharacterSkillManager : MonoBehaviour
 {
     /// <summary>管理所有技能的容器</summary>
     public List<SkillData> skills = new List<SkillData>();
 
-    /// <summary>技能的拥有者</summary>
-    private CharacterStatus chStatus = null;
+    /// <summary>技能列表配置（Inspector 中指定，为空时使用默认配置）</summary>
+    public SkillListConfig skillConfig;
 
-    private SkillData curSkill;
+    private CharacterStatus chStatus;
+    private SkillCastController _castController;
+
+    /// <summary>默认技能路径（配置为空时的回退方案，保持向后兼容）</summary>
+    private static readonly string[] DefaultSkillPaths = { "Skill_1", "Skill_2", "Skill_3", "Skill_4", "Skill_5" };
 
     private void AddSkill(string path)
     {
         SkillTemp skTemp = Instantiate(Resources.Load<SkillTemp>(path));
-        Skill sk = LoadSkill(skTemp);;
-        SkillData skd = new SkillData();
-        skd.skill = sk;
+        Skill sk = LoadSkill(skTemp);
+        SkillData skd = new SkillData { skill = sk };
         skills.Add(skd);
     }
 
-    //初始化技能数据(有什么技能)
     public void Start()
     {
         chStatus = GetComponent<CharacterStatus>();
+        _castController = GetComponent<SkillCastController>();
 
-        AddSkill("Skill_1");
-        AddSkill("Skill_2");
-        AddSkill("Skill_3");
-        AddSkill("Skill_4");
-        AddSkill("Skill_5");
-        
+        // 配置驱动加载：优先使用 Inspector 配置，回退到默认
+        var paths = skillConfig != null ? skillConfig.skillPaths : DefaultSkillPaths;
+        foreach (var path in paths)
+            AddSkill(path);
+
+        // 预加载技能特效预制体到对象池
         foreach (var item in skills)
         {
-            //动态加载技能特效预制体  //Resources/Skill -- 技能特效预制体 
             if (item.skillPrefab == null && !string.IsNullOrEmpty(item.skill.prefabName))
                 item.skillPrefab = LoadFxPrefab("Skill/" + item.skill.prefabName);
-            
-            //Resources/Skill/HitFx     技能伤害特效预制体
+
             if (item.hitFxPrefab == null && !string.IsNullOrEmpty(item.skill.hitFxName))
                 item.hitFxPrefab = LoadFxPrefab("Skill/" + item.skill.hitFxName);
         }
     }
 
-    //将特效预制件载入到对象池，以备将来使用
     private GameObject LoadFxPrefab(string path)
     {
         var key = path.Substring(path.LastIndexOf("/") + 1);
         var go = Resources.Load<GameObject>(path);
         GameObjectPool.I.Destory(
-            GameObjectPool.I.CreateObject(
-                key, go, transform.position, transform.rotation)
-        );
+            GameObjectPool.I.CreateObject(key, go, transform.position, transform.rotation));
         return go;
     }
 
-    //准备技能
+    /// <summary>准备技能</summary>
     public SkillData PrepareSkill(int id)
     {
-        //从技能容器中找出相应ID的技能
         var skillData = skills.Find(p => p.skill.skillID == id);
-        if (skillData != null && //查找到技能
-            chStatus.SP >= skillData.skill.costSP && //检查角色SP是否够使用该技能
-            skillData.coolRemain == 0) //且该技能已经冷却结束
+        if (skillData != null &&
+            chStatus.SP >= skillData.skill.costSP &&
+            skillData.coolRemain == 0)
         {
             skillData.Owner = gameObject;
             return skillData;
         }
+        return null;
+    }
+
+    /// <summary>释放技能（启动冷却 + 委托施放控制器管理时序）</summary>
+    public void DeploySkill(SkillData skillData)
+    {
+        StartCoroutine(CoolTimeDown(skillData));
+
+        // 有 SkillCastController 时走三阶段施放，否则直接执行（向后兼容）
+        if (_castController != null)
+            _castController.StartCast(skillData);
+        else
+            DeploySkillInternal(skillData);
+    }
+
+    /// <summary>实际执行 VFX 部署（由 SkillCastController 在 Casting 阶段调用）</summary>
+    public void ExecuteDeploy(SkillData skillData)
+    {
+        DeploySkillInternal(skillData);
+    }
+
+    /// <summary>技能部署共用逻辑</summary>
+    private void DeploySkillInternal(SkillData skillData)
+    {
+        GameObject tempGo = CreateSkillPrefab(skillData);
+        if (tempGo == null) return;
+
+        var deployer = tempGo.GetComponent<SkillDeployer>();
+        if (deployer == null)
+            deployer = tempGo.AddComponent<SkillDeployer>();
+
+        deployer.skillData = skillData;
+        deployer.DeploySkill();
+
+        if ((skillData.skill.damageType & DamageType.Bullet) != DamageType.Bullet)
+        {
+            float destroyDelay = skillData.skill.durationTime > 0
+                ? skillData.skill.durationTime
+                : 0.5f;
+            GameObjectPool.I.Destory(tempGo, destroyDelay);
+        }
+    }
+
+    /// <summary>创建技能预制体（处理偏移/发射点）</summary>
+    private GameObject CreateSkillPrefab(SkillData skillData)
+    {
+        if ((skillData.skill.damageType & DamageType.FxOffset) == DamageType.FxOffset)
+            return GameObjectPool.I.CreateObject(skillData.skill.prefabName, skillData.skillPrefab,
+                transform.position + transform.forward * skillData.skill.fxOffset, transform.rotation);
+
+        if ((skillData.skill.damageType & DamageType.FirePos) == DamageType.FirePos)
+            return GameObjectPool.I.CreateObject(skillData.skill.prefabName, skillData.skillPrefab,
+                chStatus.FirePos.position, chStatus.FirePos.rotation);
 
         return null;
     }
 
-    //释放技能
-    public void DeploySkill(SkillData skillData)
-    {
-        //开始冷却计时
-        StartCoroutine(CoolTimeDown(skillData));
-
-        //动画某一帧触发技能特效，这里写一个延迟调用的方法，使用动画时间的百分解决特效释放时间问题
-        if (skillData.skill.delayAnimaTime != 0)
-        {
-            curSkill = skillData;
-            Invoke("DelayDeploySkill", skillData.skill.delayAnimaTime);
-            return;
-        }
-        
-        GameObject tempGo = null;
-        //创建技能预制体+创建位置的偏移
-        if ((skillData.skill.damageType & DamageType.FxOffset) == DamageType.FxOffset)
-            tempGo = GameObjectPool.I.CreateObject(skillData.skill.prefabName, skillData.skillPrefab,
-                transform.position + transform.forward * skillData.skill.fxOffset, transform.rotation);
-       
-        else if ((skillData.skill.damageType & DamageType.FirePos) == DamageType.FirePos)
-            tempGo = GameObjectPool.I.CreateObject(skillData.skill.prefabName, skillData.skillPrefab,
-                chStatus.FirePos.position, chStatus.FirePos.rotation);
-
-        if(tempGo == null)
-            return;
-
-        //从预制体对象上找到技能释放对象 
-        var deployer = tempGo.GetComponent<SkillDeployer>();
-        if (deployer == null)
-            deployer = tempGo.AddComponent<SkillDeployer>();
-
-        //设置要释放的技能
-        deployer.skillData = skillData;
-        //调用释放方法
-        deployer.DeploySkill();
-        
-        //技能持续时间过后，技能要销毁
-        if ((skillData.skill.damageType & DamageType.Bullet) != DamageType.Bullet)
-        {
-            if (skillData.skill.durationTime > 0)
-                GameObjectPool.I.Destory(tempGo, skillData.skill.durationTime);
-            else
-                GameObjectPool.I.Destory(tempGo, 0.5f);
-        }
-    }
-
-    private void DelayDeploySkill()
-    {
-        GameObject tempGo = null;
-        //创建技能预制体+创建位置的偏移
-        if ((curSkill.skill.damageType & DamageType.FxOffset) == DamageType.FxOffset)
-            tempGo = GameObjectPool.I.CreateObject(curSkill.skill.prefabName, curSkill.skillPrefab,
-                transform.position + transform.forward * curSkill.skill.fxOffset, transform.rotation);
-        
-        else if ((curSkill.skill.damageType & DamageType.FirePos) == DamageType.FirePos)
-            tempGo = GameObjectPool.I.CreateObject(curSkill.skill.prefabName, curSkill.skillPrefab,
-                chStatus.FirePos.position, chStatus.FirePos.rotation);
-
-        //从预制体对象上找到技能释放对象 
-        var deployer = tempGo.GetComponent<SkillDeployer>();
-        if (deployer == null)
-            deployer = tempGo.AddComponent<SkillDeployer>();
-
-        //设置要释放的技能
-        deployer.skillData = curSkill;
-        //调用释放方法
-        deployer.DeploySkill();
-
-        //技能持续时间过后，技能要销毁
-        if ((curSkill.skill.damageType & DamageType.Bullet) != DamageType.Bullet)
-        {
-            if (curSkill.skill.durationTime > 0)
-                GameObjectPool.I.Destory(tempGo, curSkill.skill.durationTime);
-            else
-                GameObjectPool.I.Destory(tempGo, 0.5f);
-        }
-    }
-
-    //冷却时间倒计时
     public IEnumerator CoolTimeDown(SkillData skillData)
     {
         skillData.coolRemain = skillData.skill.coolTime;
@@ -165,24 +134,20 @@ public class CharacterSkillManager : MonoBehaviour
             yield return new WaitForSeconds(0.1f);
             skillData.coolRemain -= 0.1f;
         }
-
         skillData.coolRemain = 0;
     }
 
-    //取得冷却倒计时的剩余时间(秒)
     public float GetSkillCoolRemain(int id)
     {
-        return skills.Find(p => p.skill.skillID == id).coolRemain;
+        var skillData = skills.Find(p => p.skill.skillID == id);
+        return skillData != null ? skillData.coolRemain : 0f;
     }
 
     private Skill LoadSkill(SkillTemp skillTemp)
     {
         Skill sk = skillTemp.skill;
-        int count = skillTemp.damageType.Length;
-        for (int i = 0; i < count; ++i)
-        {
-            sk.damageType = sk.damageType | skillTemp.damageType[i];
-        }
+        foreach (var dt in skillTemp.damageType)
+            sk.damageType |= dt;
         return sk;
     }
 }

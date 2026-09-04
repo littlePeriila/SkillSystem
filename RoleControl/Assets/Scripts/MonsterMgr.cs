@@ -1,14 +1,15 @@
-using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 
+/// <summary>敌人头像管理单例 — 维护所有敌人头像引用</summary>
 public class MonsterMgr
 {
     private static MonsterMgr instance;
-    private Vector2 hidePos = new Vector2(1600, 444);
 
-    private MonsterMgr(){}
-    public static MonsterMgr I {
+    private MonsterMgr() { }
+
+    public static MonsterMgr I
+    {
         get
         {
             if (instance == null)
@@ -23,17 +24,9 @@ public class MonsterMgr
     {
         allEnemyPortraits.Add(uiPortrait);
     }
-    
+
     public void RemoveEnemyPortraits(UIPortrait uiPortrait)
     {
         allEnemyPortraits.Remove(uiPortrait);
-    }
-
-    public void HideAllEnemyPortraits()
-    {
-        foreach (var it in allEnemyPortraits)
-        {
-            it.GetComponent<RectTransform>().anchoredPosition = hidePos;
-        }
     }
 }

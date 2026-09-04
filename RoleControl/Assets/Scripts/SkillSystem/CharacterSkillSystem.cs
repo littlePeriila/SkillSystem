@@ -1,36 +1,22 @@
 ﻿using System;
-using System.Collections.Generic;
-using System.Linq;
 using UnityEngine;
 
-
 /// <summary>
-/// 角色系统
+/// 角色技能系统 — 技能调度、连击、目标选择、事件发布
 /// </summary>
 [RequireComponent(typeof(CharacterSkillManager))]
 public class CharacterSkillSystem : MonoBehaviour
 {
-    //技能管理
     public CharacterSkillManager chSkillMgr;
 
-    //角色状态
-    private CharacterStatus chStatus;
-
-    //角色动画
-    private Animator mAnimator;
-
-    //当前使用的技能
     private SkillData currentUseSkill;
-
-    //当前攻击的目标
     private Transform currentSelectedTarget;
+    private SkillCastController _castController;
 
-    //初始化
     public void Start()
     {
-        mAnimator = GetComponent<Animator>();
         chSkillMgr = GetComponent<CharacterSkillManager>();
-        chStatus = GetComponent<CharacterStatus>();
+        _castController = GetComponent<SkillCastController>();
     }
 
     /// <summary>
@@ -40,83 +26,64 @@ public class CharacterSkillSystem : MonoBehaviour
     /// <param name="isBatter">是否连击</param>
     public void AttackUseSkill(int skillid, bool isBatter = false)
     {
-        //如果是连击，找当前技能的下一个连击技能
+        // 施放中不可重复施放
+        if (_castController != null && _castController.IsCasting) return;
+
         if (currentUseSkill != null && isBatter)
             skillid = currentUseSkill.skill.nextBatterId;
-        //准备技能
+
         currentUseSkill = chSkillMgr.PrepareSkill(skillid);
-        if (currentUseSkill != null)
+        if (currentUseSkill == null) return;
+
+        // Select 类型技能：需选中目标
+        if ((currentUseSkill.skill.damageType & DamageType.Select) == DamageType.Select)
         {
-            //选中释放技能调用
-            if ((currentUseSkill.skill.damageType & DamageType.Select) == DamageType.Select)
+            var selectedTarget = SelectTarget();
+            if (currentUseSkill.skill.attckTargetTags.Contains("Player"))
+                selectedTarget = gameObject;
+
+            if (selectedTarget == null) return;
+
+            UpdateSelectedTarget(selectedTarget.transform);
+
+            // Buff 技能：对选中目标施加 Buff
+            if ((currentUseSkill.skill.damageType & DamageType.Buff) == DamageType.Buff)
             {
-                var selectedTaget = SelectTarget();
-                if (currentUseSkill.skill.attckTargetTags.Contains("Player"))
-                    selectedTaget = gameObject;
-
-                if (selectedTaget != null)
-                {
-                    CharacterStatus selectStatus = null;
-                    //修改成获取characterStatus中的Selected节点设置隐藏；
-                    if (currentSelectedTarget != null)
-                    {
-                        selectStatus = currentSelectedTarget.GetComponent<CharacterStatus>();
-                        selectStatus.selected.SetActive(false);
-                    }
-                    currentSelectedTarget = selectedTaget.transform;
-                    selectStatus = currentSelectedTarget.GetComponent<CharacterStatus>();
-                    selectStatus.selected.SetActive(true);
-                    
-                    //buff技能
-                    if ((currentUseSkill.skill.damageType & DamageType.Buff) == DamageType.Buff)
-                    {
-                        foreach (var buff in currentUseSkill.skill.buffType)
-                        {
-                            //加bufficon
-                            //英雄不需要隐藏
-                            if (!selectedTaget.CompareTag("Player"))
-                            {
-                                MonsterMgr.I.HideAllEnemyPortraits();
-                                selectStatus.uiPortrait.ShowPortrait();
-                            }
-
-                            //uiPortrait.transform.SetAsLastSibling();
-                            selectStatus.uiPortrait.AddBuffIcon(buff, currentUseSkill.skill.buffDuration);
-
-                            //已有该buff刷新
-                            bool exist = false;
-                            var buffs = selectedTaget.GetComponents<BuffRun>();
-                            foreach (var it in buffs)
-                            {
-                                if (it.bufftype == buff)
-                                {
-                                    it.Reset();
-                                    exist = true;
-                                    break;
-                                }
-                            }
-
-                            if (exist)
-                                continue;
-
-                            //添加新buff
-                            var buffRun = selectedTaget.AddComponent<BuffRun>();
-                            buffRun.InitBuff(buff, currentUseSkill.skill.buffDuration,
-                                currentUseSkill.skill.buffValue, currentUseSkill.skill.buffInterval);
-                        }
-                    }
-
-                    //转向目标
-                    //transform.LookAt(currentSelectedTarget);
-                    chSkillMgr.DeploySkill(currentUseSkill);
-                    mAnimator.Play(currentUseSkill.skill.animtionName);
-                }
+                ApplyBuffToTarget(selectedTarget);
             }
-            else
-            {
-                chSkillMgr.DeploySkill(currentUseSkill);
-                mAnimator.Play(currentUseSkill.skill.animtionName);
-            }
+        }
+
+        // 委托 SkillCastController 管理三阶段施放
+        chSkillMgr.DeploySkill(currentUseSkill);
+    }
+
+    /// <summary>更新选中目标视觉 + 事件发布</summary>
+    private void UpdateSelectedTarget(Transform newTarget)
+    {
+        if (currentSelectedTarget != null)
+            currentSelectedTarget.GetComponent<CharacterStatus>().selected.SetActive(false);
+
+        currentSelectedTarget = newTarget;
+        currentSelectedTarget.GetComponent<CharacterStatus>().selected.SetActive(true);
+
+        ObserverMa.I.Notify(SkillEventKeys.TargetSelected,
+            new TargetSelectedArgs { Target = currentSelectedTarget.gameObject });
+    }
+
+    /// <summary>对目标施加 Buff — 通过 BuffSystem 统一处理</summary>
+    private void ApplyBuffToTarget(GameObject target)
+    {
+        if (currentUseSkill.skill.buffType == null) return;
+
+        foreach (var buff in currentUseSkill.skill.buffType)
+        {
+            bool hidePortraits = !target.CompareTag("Player");
+            BuffSystem.ApplyBuffWithEvents(target, buff,
+                currentUseSkill.skill.buffDuration,
+                currentUseSkill.skill.buffValue,
+                currentUseSkill.skill.buffInterval,
+                gameObject,
+                hidePortraits);
         }
     }
 
@@ -129,23 +96,19 @@ public class CharacterSkillSystem : MonoBehaviour
         {
             int index = UnityEngine.Random.Range(0, chSkillMgr.skills.Count);
             currentUseSkill = chSkillMgr.PrepareSkill(chSkillMgr.skills[index].skill.skillID);
-            if (currentUseSkill == null) //随机技能未找到或未冷却结束
-                currentUseSkill = chSkillMgr.skills[0]; //用技能表中第一个（默认技能）做补充
+            if (currentUseSkill == null)
+                currentUseSkill = chSkillMgr.skills[0];
         }
     }
 
-    //选择目标
     private GameObject SelectTarget()
     {
-        //发一个球形射线，找出所有碰撞体
         var colliders = Physics.OverlapSphere(transform.position, currentUseSkill.skill.attackDisntance);
         if (colliders == null || colliders.Length == 0) return null;
 
-        //从碰撞体列表中挑出所有的敌人
         String[] attTags = currentUseSkill.skill.attckTargetTags;
         var array = CollectionHelper.Select<Collider, GameObject>(colliders, p => p.gameObject);
-       
-        //正前方，tag正确，血量大于0的敌人
+
         array = CollectionHelper.FindAll<GameObject>(array,
             p => Array.IndexOf(attTags, p.tag) >= 0
                  && p.GetComponent<CharacterStatus>().HP > 0 &&
@@ -153,7 +116,6 @@ public class CharacterSkillSystem : MonoBehaviour
 
         if (array == null || array.Length == 0) return null;
 
-        //将所有的敌人，按与技能的发出者之间的距离升序排列，
         CollectionHelper.OrderBy<GameObject, float>(array,
             p => Vector3.Distance(transform.position, p.transform.position));
         return array[0];

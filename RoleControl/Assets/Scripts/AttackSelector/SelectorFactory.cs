@@ -1,31 +1,40 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Linq;
-using System.Text;
+using UnityEngine;
 
-//简单工厂  
-//创建敌人选择器
+/// <summary>简单工厂 — 创建攻击目标选择器，带缓存和安全检查</summary>
 public class SelectorFactory
 {
-    //攻击目标选择器缓存
-    private static Dictionary<string, IAttackSelector> cache = new Dictionary<string, IAttackSelector>();
+    private static readonly Dictionary<string, IAttackSelector> cache = new Dictionary<string, IAttackSelector>();
 
     public static IAttackSelector CreateSelector(DamageMode mode)
     {
-        //没有缓存则创建
-        if (!cache.ContainsKey(mode.ToString()))
+        string key = mode.ToString();
+
+        if (cache.TryGetValue(key, out var cached))
+            return cached;
+
+        var nameSpace = typeof(SelectorFactory).Namespace;
+        string classFullName = string.Format("{0}AttackSelector", key);
+
+        if (!string.IsNullOrEmpty(nameSpace))
+            classFullName = nameSpace + "." + classFullName;
+
+        Type type = Type.GetType(classFullName);
+        if (type == null)
         {
-            var nameSpace = typeof(SelectorFactory).Namespace;
-            string classFullName = string.Format("{0}AttackSelector", mode.ToString());
-
-            if (!String.IsNullOrEmpty(nameSpace))
-                classFullName = nameSpace + "." + classFullName;
-
-            Type type = Type.GetType(classFullName);
-            cache.Add(mode.ToString(), Activator.CreateInstance(type) as IAttackSelector);
+            Debug.LogError($"[SelectorFactory] 找不到选择器类型: {classFullName}");
+            return null;
         }
 
-        //从缓存中取得创建好的选择器对象
-        return cache[mode.ToString()];
+        var selector = Activator.CreateInstance(type) as IAttackSelector;
+        if (selector == null)
+        {
+            Debug.LogError($"[SelectorFactory] 类型 {classFullName} 未实现 IAttackSelector");
+            return null;
+        }
+
+        cache.Add(key, selector);
+        return selector;
     }
 }

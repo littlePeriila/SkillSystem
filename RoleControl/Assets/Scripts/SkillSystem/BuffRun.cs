@@ -1,137 +1,93 @@
-using System;
 using System.Collections;
-using System.Collections.Generic;
-using System.Linq;
-using System.Security.Cryptography;
-using DG.Tweening;
 using UnityEngine;
 
+/// <summary>Buff 运行时实例 — 仅管理生命周期，效果委托给 IBuffEffect 策略</summary>
 public class BuffRun : MonoBehaviour
 {
-    private float durationTime;
-    public BuffType bufftype;
-    private float value;            //伤害或者加成
+    private IBuffEffect _effect;
+    private CharacterStatus _target;
+    private GameObject _caster;
+    private float _value;
+    private float _duration;
+    private float _interval;
+    private float _timer;
+    private bool _cleanedUp;
 
-    private float interval;
+    public BuffType bufftype => _effect?.BuffType ?? BuffType.None;
 
-    private float attackTimer;
-
-    private float curTime;
-
-    private CharacterStatus target;
-    
-    public void InitBuff(BuffType buffType,float duration,float value,float interval)
+    public void InitBuff(BuffType buffType, float duration, float value, float interval, GameObject caster = null)
     {
-        bufftype = buffType;
-        
-        if (buffType == BuffType.BeatBack || buffType == BuffType.BeatUp || buffType == BuffType.Pull)
-            duration = 2f;
-        
-        durationTime = duration;
-        this.value = value;
-        this.interval = interval;
-        curTime = 0;
+        _effect = BuffFactory.Create(buffType);
+        if (_effect == null)
+        {
+            Destroy(this);
+            return;
+        }
+
+        _caster = caster;
+
+        // 位移类 buff 固定 2 秒
+        _duration = (buffType == BuffType.BeatBack || buffType == BuffType.BeatUp || buffType == BuffType.Pull)
+            ? 2f
+            : duration;
+        _value = value;
+        _interval = interval;
+        _target = GetComponent<CharacterStatus>();
+
+        StartCoroutine(Execute());
     }
 
     public void Reset()
     {
-        attackTimer = 0;
-        curTime = 0;
-    }
-
-    void Start()
-    {
-        curTime = 0;
-        target = GetComponent<CharacterStatus>();
-        StartCoroutine(ExcuteDamage());
-    }
-
-    private void Update()
-    {
-        curTime += Time.deltaTime;
-        
-        if(curTime > durationTime)
-            Destroy(this);
-    }
-
-    private IEnumerator ExcuteDamage()
-    {
-        attackTimer = 0; //已持续攻击的时间
-
-        do
-        {
-            //对敌人的影响
-            TargetImpact();
-            
-            yield return new WaitForSeconds(interval);
-            attackTimer += interval;
-            //做伤害数值的计算
-        } while (durationTime > attackTimer);
-        
-        Destroy(this);
-    }
-
-    private void TargetImpact()
-    {
-        Transform fxPosTf = target.HitFxPos;
-
-        if (bufftype == BuffType.Burn || bufftype == BuffType.Poison || bufftype == BuffType.Light)
-            target.OnDamage(value, gameObject, true);
-        else if (bufftype == BuffType.Slow)//减速
-            fxPosTf = target.transform;
-        else if (bufftype == BuffType.BeatBack)
-        {
-            Vector3 dir = -target.transform.position + GameObject.FindGameObjectWithTag("Player").transform.position;
-            dir.y = 0;
-            target.transform.DOMove(target.transform.position - dir.normalized * value,0.5f);
-            durationTime = 2f;
-        }
-        else if (bufftype == BuffType.BeatUp)
-        {
-            target.transform.DOMove(target.transform.position - Vector3.up * value,0.5f);
-            durationTime = 2f;
-        }
-        else if (bufftype == BuffType.AddDefence)
-        {
-            fxPosTf = target.transform;
-            target.defence += value;
-        }
-        else if (bufftype == BuffType.RecoverHp)
-        {
-            target.OnDamage(-value, gameObject, true);
-        }
-
-        if (buffFx.ContainsKey(bufftype))
-        {
-            GameObject go = Resources.Load<GameObject>($"Skill/{buffFx[bufftype]}");
-            GameObject buffGo = GameObjectPool.I.CreateObject(buffFx[bufftype], go, fxPosTf.position, fxPosTf.rotation);
-            buffGo.transform.SetParent(fxPosTf);
-            GameObjectPool.I.Destory(buffGo, interval);
-        }
-    }
-
-    private static Dictionary<BuffType, string> buffFx = new Dictionary<BuffType, string>();
-
-    public static void InitAllBuff()
-    {
-        buffFx.Add(BuffType.Burn,"Skill_32_R_Fly_100");
-        buffFx.Add(BuffType.Light,"Skill_75_Cast");
-        buffFx.Add(BuffType.Slow,"Skill_21_R_Fly_100");
-        buffFx.Add(BuffType.Poison,"Skill_12_R_Fly_100");
-        buffFx.Add(BuffType.AddDefence,"FX_CHAR_Aura");
-        buffFx.Add(BuffType.RecoverHp,"FX_Heal_Light_Cast");
+        _timer = 0;
     }
 
     public float GetRemainTime()
     {
-        return durationTime - curTime;
+        return _duration - _timer;
     }
-    
+
+    private IEnumerator Execute()
+    {
+        do
+        {
+            _effect.Apply(_target, _value, _caster);
+            SpawnFx();
+            yield return new WaitForSeconds(_interval);
+            _timer += _interval;
+        } while (_timer < _duration);
+
+        Cleanup();
+        Destroy(this);
+    }
+
+    private void SpawnFx()
+    {
+        if (string.IsNullOrEmpty(_effect.FxPrefabName))
+            return;
+
+        var fxPos = _effect.FxOnRoot ? _target.transform : _target.HitFxPos;
+        var prefab = Resources.Load<GameObject>($"Skill/{_effect.FxPrefabName}");
+        if (prefab == null) return;
+
+        var fx = GameObjectPool.I.CreateObject(
+            _effect.FxPrefabName, prefab, fxPos.position, fxPos.rotation);
+        fx.transform.SetParent(fxPos);
+        GameObjectPool.I.Destory(fx, _interval);
+    }
+
     private void OnDisable()
     {
-        if (bufftype == BuffType.Slow)
-            ;
-        else if (bufftype == BuffType.AddDefence)
-            target.defence -= value;
+        Cleanup();
+    }
+
+    /// <summary>确保 OnRemove 只执行一次</summary>
+    private void Cleanup()
+    {
+        if (_cleanedUp) return;
+        _cleanedUp = true;
+
+        if (_effect != null && _target != null)
+            _effect.OnRemove(_target, _value);
     }
 }

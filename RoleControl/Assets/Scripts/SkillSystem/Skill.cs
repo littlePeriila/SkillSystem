@@ -139,4 +139,30 @@ public class Skill
     
     /// <summary>Buff生效间隔时间</summary>
     public float buffValue;
+
+    [Header("位移参数")]
+    /// <summary>自身位移类型</summary>
+    public DisplacementType displacementType;
+    /// <summary>位移总距离</summary>
+    public float displacementDistance;
+    /// <summary>抛物线高度 / 闪现高度偏移</summary>
+    public float displacementHeight;
+    /// <summary>位移速度</summary>
+    public float displacementSpeed;
+    /// <summary>多段位移每段距离（长度=段数）</summary>
+    public float[] displacementStages;
+    /// <summary>多段位移每段间隔</summary>
+    public float displacementStageInterval;
+
+    [Header("施放时序")]
+    /// <summary>前摇时间（秒），前摇期间可被打断</summary>
+    public float windupDuration;
+    /// <summary>后摇时间（秒），后摇期间可被打断</summary>
+    public float recoveryDuration;
+    /// <summary>前摇动画名（空则使用 animtionName）</summary>
+    public string windupAnimName;
+    /// <summary>后摇动画名（空则使用 animtionName）</summary>
+    public string recoveryAnimName;
+    /// <summary>可打断标志（0=不可打断，1=前摇可打断，2=后摇可打断，3=前后摇均可打断）</summary>
+    public int interruptible;
 }

@@ -1,33 +1,37 @@
-using System;
-using System.Collections;
-using System.Collections.Generic;
 using UnityEngine;
-using UnityEngine.U2D;
 using UnityEngine.UI;
 
 public class BuffIcon : MonoBehaviour
 {
     public Text textCD;
     public Image imgIcon;
-    
+
     private float durationTime;
     private float curTime;
 
     public BuffType buffType;
 
+    private static Sprite[] _buffSprites;
+
     public void LoadIcon(BuffType buffType, float duration)
     {
         durationTime = duration;
         this.buffType = buffType;
-        Sprite[] temp = Resources.LoadAll<Sprite>("BuffIcon/Buff");
-        if (temp != null)
+
+        string iconName = BuffIconMapping.GetIconName(buffType);
+        if (iconName == null) return;
+
+        // 首次加载时缓存整张图集，后续直接从缓存读取
+        if (_buffSprites == null)
+            _buffSprites = Resources.LoadAll<Sprite>("BuffIcon/Buff");
+        if (_buffSprites == null) return;
+
+        foreach (var sp in _buffSprites)
         {
-            foreach (var sp in temp)
+            if (sp.name == iconName)
             {
-                if (sp.name == SkillDeployer.buffIconName[buffType])
-                {
-                    imgIcon.sprite = Instantiate(sp);
-                }
+                imgIcon.sprite = Instantiate(sp);
+                break;
             }
         }
     }
@@ -40,7 +44,6 @@ public class BuffIcon : MonoBehaviour
     void Update()
     {
         curTime += Time.deltaTime;
-        
         textCD.text = (durationTime - curTime).ToString("F0");
 
         if (curTime > durationTime)
@@ -52,7 +55,6 @@ public class BuffIcon : MonoBehaviour
 
     public void Refresh()
     {
-        //Debug.Log("已有buff刷新持续时间");
         curTime = 0;
     }
 }
